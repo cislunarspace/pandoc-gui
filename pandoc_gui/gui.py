@@ -4,9 +4,10 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+import threading
 
 try:
-    from PyQt6.QtCore import QProcess, Qt
+    from PyQt6.QtCore import QProcess, Qt, QThread, QEvent, pyqtSignal
     from PyQt6.QtWidgets import (
         QApplication,
         QFileDialog,
@@ -102,6 +103,23 @@ _BaseWindow = QMainWindow if HAS_PYQT6 else object
 
 MAX_LOG_LINES = 500
 
+_qevent_type = None
+
+
+def _get_polish_event_type():
+    global _qevent_type
+    if _qevent_type is None:
+        _qevent_type = QEvent.Type(QEvent.registerEventType())
+    return _qevent_type
+
+
+class _PolishResultEvent(QEvent):
+    """Custom event to carry polish result from thread to main thread."""
+
+    def __init__(self, result):
+        super().__init__(_get_polish_event_type())
+        self.result = result  # (status, message_or_fixes, output_path)
+
 
 class MinerUGui(_BaseWindow):
     def __init__(self):
@@ -111,7 +129,9 @@ class MinerUGui(_BaseWindow):
         self.process = None
         self.file_queue = []
         self.output_dir = ""
+        self.polish_thread = None
         self._init_ui()
+        self._load_llm_config()
 
     def _init_ui(self):
         central = QWidget()
@@ -156,6 +176,21 @@ class MinerUGui(_BaseWindow):
         output_layout.addWidget(self.output_browse_btn)
         layout.addWidget(output_group)
 
+        # --- LLM Configuration ---
+        llm_group = QGroupBox("LLM Configuration")
+        llm_layout = QVBoxLayout(llm_group)
+        self.llm_url_edit = QLineEdit()
+        self.llm_url_edit.setPlaceholderText("API URL (e.g. https://api.openai.com/v1/chat/completions)")
+        self.llm_key_edit = QLineEdit()
+        self.llm_key_edit.setPlaceholderText("API Key")
+        self.llm_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.llm_model_edit = QLineEdit()
+        self.llm_model_edit.setPlaceholderText("Model (e.g. gpt-4)")
+        llm_layout.addWidget(self.llm_url_edit)
+        llm_layout.addWidget(self.llm_key_edit)
+        llm_layout.addWidget(self.llm_model_edit)
+        layout.addWidget(llm_group)
+
         # --- Action buttons ---
         btn_layout = QHBoxLayout()
         self.run_btn = QPushButton("Run")
@@ -163,8 +198,11 @@ class MinerUGui(_BaseWindow):
         self.cancel_btn = QPushButton("Cancel")
         self.cancel_btn.clicked.connect(self._cancel)
         self.cancel_btn.setEnabled(False)
+        self.polish_btn = QPushButton("润色")
+        self.polish_btn.clicked.connect(self._polish)
         btn_layout.addWidget(self.run_btn)
         btn_layout.addWidget(self.cancel_btn)
+        btn_layout.addWidget(self.polish_btn)
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
 
@@ -176,11 +214,157 @@ class MinerUGui(_BaseWindow):
         log_layout.addWidget(self.log_text)
         layout.addWidget(log_group, stretch=1)
 
-    def _notify(self, title: str, body: str):
+    def event(self, event):
+        if event.type() == _get_polish_event_type():
+            status = event.result[0]
+            if status == "fixes":
+                fixes, input_path, output_dir = event.result[1], event.result[2], event.result[3]
+                self._handle_polish_fixes(fixes, input_path, output_dir)
+            elif status == "error":
+                err_msg = event.result[1]
+                self._on_polish_finished(False, err_msg)
+                self.log_text.append(f"[FAILED] {err_msg}\n")
+                if self.file_queue:
+                    self._polish_next()
+            return True
+        return super().event(event)
+
+    def _handle_polish_fixes(self, fixes, input_path, output_dir):
+        from pandoc_gui.polish_dialog import PolishPreviewDialog
+        dialog = PolishPreviewDialog(fixes, self)
+        if dialog.exec():
+            # User confirmed - apply fixes and save
+            try:
+                from pandoc_gui.heading_fixer import apply_fixes
+                with open(input_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                fixed_content = apply_fixes(content, fixes)
+                p = Path(input_path)
+                output_path = str(Path(output_dir) / f"{p.stem}_polished.md")
+                with open(output_path, "w", encoding="utf-8") as f:
+                    f.write(fixed_content)
+                self.log_text.append(f"[OK] {Path(output_path).name}\n")
+                self._on_polish_finished(True, f"润色完成: {output_path}")
+            except Exception as e:
+                self._on_polish_finished(False, str(e))
+                self.log_text.append(f"[FAILED] {str(e)}\n")
+        else:
+            self.log_text.append("[已取消]\n")
+            self._on_polish_finished(True, "已取消")
+        if self.file_queue:
+            self._polish_next()
+
+    def _load_llm_config(self):
         try:
-            subprocess.Popen(["notify-send", title, body])
-        except FileNotFoundError:
+            from pandoc_gui.config import load_llm_config
+            config = load_llm_config()
+            if config:
+                self.llm_url_edit.setText(config.get("api_url", ""))
+                self.llm_key_edit.setText(config.get("api_key", ""))
+                self.llm_model_edit.setText(config.get("model", ""))
+        except Exception:
             pass
+
+    def _save_llm_config(self):
+        try:
+            from pandoc_gui.config import save_llm_config
+            config = {
+                "api_url": self.llm_url_edit.text().strip(),
+                "api_key": self.llm_key_edit.text().strip(),
+                "model": self.llm_model_edit.text().strip(),
+            }
+            save_llm_config(config)
+        except Exception:
+            pass
+
+    def _get_llm_config(self):
+        return {
+            "api_url": self.llm_url_edit.text().strip(),
+            "api_key": self.llm_key_edit.text().strip(),
+            "model": self.llm_model_edit.text().strip(),
+        }
+
+    def _polish(self):
+        input_path = self.input_path_edit.text().strip()
+        output_dir = self.output_dir_edit.text().strip()
+        is_folder = self.radio_folder.isChecked()
+
+        # Validate LLM config
+        llm_config = self._get_llm_config()
+        if not llm_config["api_url"] or not llm_config["api_key"] or not llm_config["model"]:
+            QMessageBox.warning(self, "LLM 配置不完整", "请填写完整的 API URL、Key 和 Model")
+            return
+
+        # Validate input
+        error = validate_input(input_path)
+        if error:
+            QMessageBox.warning(self, "Invalid Input", error)
+            return
+
+        # Save LLM config
+        self._save_llm_config()
+
+        # Create output dir
+        os.makedirs(output_dir, exist_ok=True)
+
+        if is_folder:
+            input_p = Path(input_path)
+            md_files = list(input_p.glob("*.md"))
+            if not md_files:
+                QMessageBox.warning(self, "No Files", "No .md files found in the selected folder.")
+                return
+            self._polish_folder(list(md_files), output_dir, llm_config)
+        else:
+            self._polish_single(input_path, output_dir, llm_config)
+
+    def _polish_single(self, input_path: str, output_dir: str, llm_config: dict):
+        self.log_text.clear()
+        self.log_text.append(f"润色中: {input_path}\n")
+
+        self.polish_btn.setEnabled(False)
+        self.run_btn.setEnabled(False)
+
+        def work():
+            try:
+                from pandoc_gui.polish_service import polish_file
+                fixes = polish_file(input_path, output_dir, llm_config)
+                result = "fixes", fixes, input_path, output_dir
+            except Exception as e:
+                result = "error", str(e), None, None
+
+            from PyQt6.QtWidgets import QApplication
+            QApplication.instance().postEvent(self, _PolishResultEvent(result))
+
+        self.polish_thread = threading.Thread(target=work, daemon=True)
+        self.polish_thread.start()
+
+    def _polish_folder(self, md_files: list, output_dir: str, llm_config: dict):
+        self.log_text.clear()
+        self.log_text.append(f"找到 {len(md_files)} 个 Markdown 文件\n\n")
+        self.file_queue = list(md_files)
+        self.output_dir = output_dir
+        self.llm_config = llm_config
+        self._polish_next()
+
+    def _polish_next(self):
+        if not self.file_queue:
+            self.log_text.append("\n[润色完成]")
+            self.polish_btn.setEnabled(True)
+            self.run_btn.setEnabled(True)
+            self._notify("Pandoc GUI", "批量润色完成")
+            return
+
+        input_path = str(self.file_queue.pop(0))
+        self.log_text.append(f"--- 润色中: {input_path} ---\n")
+        self._polish_single(input_path, self.output_dir, self.llm_config)
+
+    def _on_polish_finished(self, success: bool, message: str):
+        self.polish_btn.setEnabled(True)
+        self.run_btn.setEnabled(True)
+        if success:
+            self._notify("Pandoc GUI", message)
+        else:
+            QMessageBox.warning(self, "润色失败", message)
 
     def _browse_input(self):
         if self.radio_folder.isChecked():
@@ -328,8 +512,12 @@ class MinerUGui(_BaseWindow):
             self.log_text.append("\n[Process cancelled by user]")
             self._notify("Pandoc GUI", "任务已取消")
         self.file_queue = []
+        if self.polish_thread and self.polish_thread.is_alive():
+            self.log_text.append("\n[润色任务取消]")
+            self.polish_thread = None
         self.run_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
+        self.polish_btn.setEnabled(True)
 
     def _on_output(self):
         if self.process:
