@@ -1,0 +1,16 @@
+[project]
+name = "pandoc-gui"
+version = "0.1.0"
+description = "A GUI wrapper for pandoc Markdown to PDF conversion"
+requires-python = ">=3.10"
+dependencies = ["PyQt6"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+pandoc-gui = "pandoc_gui.gui:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
