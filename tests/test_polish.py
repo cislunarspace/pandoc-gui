@@ -90,7 +90,7 @@ class TestApplyFixes:
     def test_apply_single_fix(self):
         from pandoc_gui.heading_fixer import apply_fixes
         content = "# 1. 旧标题\n\n正文"
-        fixes = [("# 1. 旧标题", "# 旧标题")]
+        fixes = [("1. 旧标题", "旧标题")]
         result = apply_fixes(content, fixes)
         assert "# 1. 旧标题" not in result
         assert "# 旧标题" in result
@@ -100,8 +100,8 @@ class TestApplyFixes:
         from pandoc_gui.heading_fixer import apply_fixes
         content = "# 1. 标题一\n## 2. 标题二\n### 3. 标题三\n正文"
         fixes = [
-            ("# 1. 标题一", "# 标题一"),
-            ("## 2. 标题二", "## 标题二"),
+            ("1. 标题一", "标题一"),
+            ("2. 标题二", "标题二"),
         ]
         result = apply_fixes(content, fixes)
         assert "# 标题一" in result
@@ -117,6 +117,6 @@ class TestApplyFixes:
     def test_heading_not_found(self):
         from pandoc_gui.heading_fixer import apply_fixes
         content = "# 标题一\n正文"
-        fixes = [("# 不存在的标题", "# 新标题")]
+        fixes = [("不存在的标题", "新标题")]
         result = apply_fixes(content, fixes)
         assert result == content

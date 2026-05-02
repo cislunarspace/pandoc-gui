@@ -130,6 +130,7 @@ class MinerUGui(_BaseWindow):
         self.file_queue = []
         self.output_dir = ""
         self.polish_thread = None
+        self._batch_polish = False
         self._init_ui()
         self._load_llm_config()
 
@@ -222,10 +223,11 @@ class MinerUGui(_BaseWindow):
                 self._handle_polish_fixes(fixes, input_path, output_dir)
             elif status == "error":
                 err_msg = event.result[1]
-                self._on_polish_finished(False, err_msg)
                 self.log_text.append(f"[FAILED] {err_msg}\n")
-                if self.file_queue:
+                if self._batch_polish:
                     self._polish_next()
+                else:
+                    self._on_polish_finished(False, err_msg)
             return True
         return super().event(event)
 
@@ -244,15 +246,23 @@ class MinerUGui(_BaseWindow):
                 with open(output_path, "w", encoding="utf-8") as f:
                     f.write(fixed_content)
                 self.log_text.append(f"[OK] {Path(output_path).name}\n")
-                self._on_polish_finished(True, f"润色完成: {output_path}")
+                if self._batch_polish:
+                    self._polish_next()
+                else:
+                    self.input_path_edit.setText(output_path)
+                    self._on_polish_finished(True, f"润色完成: {output_path}")
             except Exception as e:
-                self._on_polish_finished(False, str(e))
                 self.log_text.append(f"[FAILED] {str(e)}\n")
+                if self._batch_polish:
+                    self._polish_next()
+                else:
+                    self._on_polish_finished(False, str(e))
         else:
             self.log_text.append("[已取消]\n")
-            self._on_polish_finished(True, "已取消")
-        if self.file_queue:
-            self._polish_next()
+            if self._batch_polish:
+                self._polish_next()
+            else:
+                self._on_polish_finished(True, "已取消")
 
     def _load_llm_config(self):
         try:
@@ -315,6 +325,7 @@ class MinerUGui(_BaseWindow):
                 return
             self._polish_folder(list(md_files), output_dir, llm_config)
         else:
+            self._batch_polish = False
             self._polish_single(input_path, output_dir, llm_config)
 
     def _polish_single(self, input_path: str, output_dir: str, llm_config: dict):
@@ -344,6 +355,7 @@ class MinerUGui(_BaseWindow):
         self.file_queue = list(md_files)
         self.output_dir = output_dir
         self.llm_config = llm_config
+        self._batch_polish = True
         self._polish_next()
 
     def _polish_next(self):
@@ -351,12 +363,16 @@ class MinerUGui(_BaseWindow):
             self.log_text.append("\n[润色完成]")
             self.polish_btn.setEnabled(True)
             self.run_btn.setEnabled(True)
-            self._notify("Pandoc GUI", "批量润色完成")
+            if self._batch_polish:
+                self._notify("Pandoc GUI", "批量润色完成")
             return
 
         input_path = str(self.file_queue.pop(0))
         self.log_text.append(f"--- 润色中: {input_path} ---\n")
         self._polish_single(input_path, self.output_dir, self.llm_config)
+
+    def _notify(self, title: str, message: str):
+        QMessageBox.information(self, title, message)
 
     def _on_polish_finished(self, success: bool, message: str):
         self.polish_btn.setEnabled(True)
