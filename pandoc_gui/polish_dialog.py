@@ -18,14 +18,16 @@ class PolishPreviewDialog(QDialog):
     Displays (original → fixed) pairs. User can confirm save or cancel.
     """
 
-    def __init__(self, fixes: list[tuple[str, str]], parent=None):
+    def __init__(self, fixes: list[tuple[str, str]], hr_count: int = 0, parent=None):
         """Initialize dialog.
 
         Args:
             fixes: List of (original_heading, fixed_heading) tuples
+            hr_count: Number of horizontal rules to be removed
         """
         super().__init__(parent)
         self.fixes = fixes
+        self.hr_count = hr_count
         self.setWindowTitle("润色预览")
         self.setMinimumSize(500, 300)
         self._init_ui()
@@ -33,13 +35,18 @@ class PolishPreviewDialog(QDialog):
     def _init_ui(self):
         layout = QVBoxLayout(self)
 
-        if not self.fixes:
+        if not self.fixes and self.hr_count == 0:
             label = QLabel("所有标题无需修复")
             label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             layout.addWidget(label)
         else:
-            label = QLabel(f"发现 {len(self.fixes)} 处待修复：")
+            label = QLabel(f"发现 {len(self.fixes)} 处待修复")
             layout.addWidget(label)
+
+            if self.hr_count > 0:
+                hr_label = QLabel(f"将去除 {self.hr_count} 条分割线")
+                hr_label.setStyleSheet("color: gray;")
+                layout.addWidget(hr_label)
 
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)

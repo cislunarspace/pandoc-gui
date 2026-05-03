@@ -233,14 +233,16 @@ class MinerUGui(_BaseWindow):
 
     def _handle_polish_fixes(self, fixes, input_path, output_dir):
         from pandoc_gui.polish_dialog import PolishPreviewDialog
-        dialog = PolishPreviewDialog(fixes, self)
+        from pandoc_gui.heading_fixer import apply_fixes, remove_horizontal_rules
+        with open(input_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        _, hr_count = remove_horizontal_rules(content)
+        dialog = PolishPreviewDialog(fixes, hr_count, self)
         if dialog.exec():
             # User confirmed - apply fixes and save
             try:
-                from pandoc_gui.heading_fixer import apply_fixes
-                with open(input_path, "r", encoding="utf-8") as f:
-                    content = f.read()
                 fixed_content = apply_fixes(content, fixes)
+                fixed_content, _ = remove_horizontal_rules(fixed_content)
                 p = Path(input_path)
                 output_path = str(Path(output_dir) / f"{p.stem}_polished.md")
                 with open(output_path, "w", encoding="utf-8") as f:

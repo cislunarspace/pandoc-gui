@@ -120,3 +120,64 @@ class TestApplyFixes:
         fixes = [("不存在的标题", "新标题")]
         result = apply_fixes(content, fixes)
         assert result == content
+
+
+class TestRemoveHorizontalRules:
+    """Tests for remove_horizontal_rules function."""
+
+    def test_removes_standalone_hr(self):
+        from pandoc_gui.heading_fixer import remove_horizontal_rules
+        content = "标题一\n\n---\n\n标题二"
+        result, count = remove_horizontal_rules(content)
+        assert count == 1
+        assert "---" not in result
+        assert "标题一" in result
+        assert "标题二" in result
+
+    def test_preserves_code_block_hr(self):
+        from pandoc_gui.heading_fixer import remove_horizontal_rules
+        content = "标题一\n\n```\n---\n```\n\n标题二"
+        result, count = remove_horizontal_rules(content)
+        assert count == 0
+        assert "```" in result
+
+    def test_preserves_heading_with_hr(self):
+        from pandoc_gui.heading_fixer import remove_horizontal_rules
+        content = "# --- 标题 ---\n\n---\n\n正文"
+        result, count = remove_horizontal_rules(content)
+        assert count == 1
+        assert "# --- 标题 ---" in result
+
+    def test_preserves_blank_line_after_removal(self):
+        from pandoc_gui.heading_fixer import remove_horizontal_rules
+        content = "标题一\n\n---\n\n标题二"
+        result, count = remove_horizontal_rules(content)
+        assert "标题一\n\n标题二" in result
+
+    def test_no_hr_returns_same_content(self):
+        from pandoc_gui.heading_fixer import remove_horizontal_rules
+        content = "# 标题一\n\n正文一\n\n正文二"
+        result, count = remove_horizontal_rules(content)
+        assert count == 0
+        assert result == content
+
+    def test_multiple_hr_removed(self):
+        from pandoc_gui.heading_fixer import remove_horizontal_rules
+        content = "标题一\n\n---\n\n标题二\n\n---\n\n标题三"
+        result, count = remove_horizontal_rules(content)
+        assert count == 2
+        assert "---" not in result
+
+    def test_inline_code_hr_preserved(self):
+        from pandoc_gui.heading_fixer import remove_horizontal_rules
+        content = "标题\n\n`---`\n\n正文"
+        result, count = remove_horizontal_rules(content)
+        assert count == 0
+        assert "`---`" in result
+
+    def test_hr_variant_not_removed(self):
+        from pandoc_gui.heading_fixer import remove_horizontal_rules
+        content = "标题\n\n- - -\n\n正文"
+        result, count = remove_horizontal_rules(content)
+        assert count == 0
+        assert "- - -" in result
